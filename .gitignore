@@ -1,0 +1,38 @@
+# Local configuration
+.env
+.env.*
+!.env.example
+
+# Tooling installed inside the workspace
+.tooling/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+*.egg-info/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+coverage/
+mobile/android/.gradle/
+mobile/android/local.properties
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local data
+*.log
+*.sqlite
+*.sqlite3
+
