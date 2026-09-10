@@ -10,6 +10,9 @@ class RunSession {
     this.pointCount = 0,
     this.error,
     this.result,
+    this.runId,
+    this.busy = false,
+    this.movingSeconds = 0,
   });
 
   final RunPhase phase;
@@ -20,6 +23,9 @@ class RunSession {
   final int pointCount;
   final String? error;
   final RunResult? result;
+  final String? runId;
+  final bool busy;
+  final int movingSeconds;
 
   bool get isActive => phase == RunPhase.running || phase == RunPhase.paused;
 
@@ -38,6 +44,9 @@ class RunSession {
     String? error,
     bool clearError = false,
     RunResult? result,
+    String? runId,
+    bool? busy,
+    int? movingSeconds,
   }) {
     return RunSession(
       phase: phase ?? this.phase,
@@ -48,6 +57,9 @@ class RunSession {
       pointCount: pointCount ?? this.pointCount,
       error: clearError ? null : error ?? this.error,
       result: result ?? this.result,
+      runId: runId ?? this.runId,
+      busy: busy ?? this.busy,
+      movingSeconds: movingSeconds ?? this.movingSeconds,
     );
   }
 }

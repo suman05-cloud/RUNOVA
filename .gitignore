@@ -28,6 +28,7 @@ mobile/android/local.properties
 # Editors and operating systems
 .idea/
 .vscode/
+.zcode/
 .DS_Store
 Thumbs.db
 
@@ -35,4 +36,3 @@ Thumbs.db
 *.log
 *.sqlite
 *.sqlite3
-

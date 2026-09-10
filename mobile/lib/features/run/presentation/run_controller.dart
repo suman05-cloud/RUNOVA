@@ -1,12 +1,16 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:runova/core/network/api_client.dart';
 import 'package:runova/core/storage/local_database.dart';
+import 'package:runova/features/auth/presentation/auth_controller.dart';
 import 'package:runova/features/run/data/run_repository.dart';
 import 'package:runova/features/run/domain/run_session.dart';
+import 'package:runova/features/run/domain/run_clock.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
 final localDatabaseProvider = Provider<LocalDatabase>((ref) => LocalDatabase());
@@ -17,9 +21,11 @@ final runRepositoryProvider = Provider<RunRepository>(
     ref.watch(authStoreProvider),
   ),
 );
-final runSessionProvider = NotifierProvider<RunController, RunSession>(RunController.new);
+final runSessionProvider = NotifierProvider<RunController, RunSession>(
+  RunController.new,
+);
 
-class RunController extends Notifier<RunSession> {
+class RunController extends Notifier<RunSession> with WidgetsBindingObserver {
   Timer? _timer;
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription<UserAccelerometerEvent>? _sensorSubscription;
@@ -33,24 +39,51 @@ class RunController extends Notifier<RunSession> {
   int _segmentStartedMs = 0;
   double _latestSpeed = 0;
   bool _busy = false;
+  final RunClock _clock = RunClock();
+  double _movingSeconds = 0;
+  Future<void> _writes = Future.value();
+  Object? _writeError;
+  DateTime? _lastGpsAt;
+  DateTime? _lastSensorAt;
+  bool _disposed = false;
 
   @override
   RunSession build() {
+    WidgetsBinding.instance.addObserver(this);
     ref.onDispose(_dispose);
+    ref.listen(authControllerProvider, (before, after) {
+      if (_remoteRun != null &&
+          after.value?.id != _remoteRun!.userId &&
+          state.phase == RunPhase.running) {
+        unawaited(pause());
+      }
+    });
     return const RunSession();
   }
 
   Future<void> start() async {
     if (_busy || state.phase != RunPhase.idle) return;
     _busy = true;
-    state = state.copyWith(gpsStatus: 'CONNECTING', clearError: true);
+    state = state.copyWith(
+      gpsStatus: 'CONNECTING',
+      clearError: true,
+      busy: true,
+    );
     try {
       await _ensureLocationPermission();
-      _remoteRun = await ref.read(runRepositoryProvider).start(DateTime.now());
+      await Permission.notification.request();
+      await Permission.activityRecognition.request();
+      final started = DateTime.now();
+      _remoteRun = await ref.read(runRepositoryProvider).start(started);
+      _clock.start(started);
       _monotonic
         ..reset()
         ..start();
-      state = const RunSession(phase: RunPhase.running, gpsStatus: 'SEARCHING');
+      state = RunSession(
+        phase: RunPhase.running,
+        gpsStatus: 'SEARCHING',
+        runId: _remoteRun!.id,
+      );
       _startTimer();
       _startStreams();
     } catch (error) {
@@ -61,20 +94,38 @@ class RunController extends Notifier<RunSession> {
       );
     } finally {
       _busy = false;
+      if (!_disposed) state = state.copyWith(busy: false);
     }
   }
 
   Future<void> pause() async {
-    if (state.phase != RunPhase.running) return;
+    if (state.phase != RunPhase.running || _busy) return;
+    _busy = true;
+    _clock.pause(DateTime.now());
+    state = state.copyWith(
+      phase: RunPhase.paused,
+      gpsStatus: 'PAUSED',
+      busy: true,
+      elapsed: _clock.activeElapsed(DateTime.now()),
+    );
     _timer?.cancel();
     await _stopStreams();
-    _monotonic.stop();
-    state = state.copyWith(phase: RunPhase.paused, gpsStatus: 'PAUSED');
+    _previousPosition = null;
+    _busy = false;
+    state = state.copyWith(busy: false);
   }
 
   void resume() {
-    if (state.phase != RunPhase.paused) return;
+    if (state.phase != RunPhase.paused || _busy) return;
+    if (ref.read(authControllerProvider).value?.id != _remoteRun?.userId) {
+      state = state.copyWith(
+        error: 'Sign in to the account that started this run.',
+      );
+      return;
+    }
+    _clock.resume(DateTime.now());
     _monotonic.start();
+    _previousPosition = null;
     state = state.copyWith(phase: RunPhase.running, gpsStatus: 'SEARCHING');
     _startTimer();
     _startStreams();
@@ -83,21 +134,39 @@ class RunController extends Notifier<RunSession> {
   Future<void> finish() async {
     if (!state.isActive || _busy || _remoteRun == null) return;
     _busy = true;
+    final stoppedAt = DateTime.now();
+    _clock.pause(stoppedAt);
+    _clock.finish(stoppedAt);
+    state = state.copyWith(
+      phase: RunPhase.paused,
+      busy: true,
+      elapsed: _clock.activeElapsed(DateTime.now()),
+    );
     _timer?.cancel();
     await _stopStreams();
     _monotonic.stop();
     state = state.copyWith(gpsStatus: 'UPLOADING', clearError: true);
     try {
-      final result = await ref.read(runRepositoryProvider).uploadAndFinish(
+      await _writes;
+      if (_writeError != null) {
+        throw StateError('Some samples could not be saved locally.');
+      }
+      final result = await ref
+          .read(runRepositoryProvider)
+          .uploadAndFinish(
             run: _remoteRun!,
             finishedAt: DateTime.now(),
             elapsedSeconds: state.elapsed.inSeconds,
-            movingSeconds: state.elapsed.inSeconds,
+            movingSeconds: _movingSeconds.floor().clamp(
+              0,
+              state.elapsed.inSeconds,
+            ),
           );
       state = state.copyWith(
         phase: RunPhase.completed,
         gpsStatus: 'COMPLETE',
         activityType: result.activity,
+        distanceMeters: result.distance,
         result: RunResult(
           status: result.status,
           trustScore: result.trustScore,
@@ -107,13 +176,22 @@ class RunController extends Notifier<RunSession> {
         ),
       );
     } catch (error) {
+      var pending = false;
+      try {
+        pending = await ref.read(runRepositoryProvider).isPending(_remoteRun!);
+      } catch (_) {
+        // A local database failure must not be reported as a saved run.
+      }
       state = state.copyWith(
-        phase: RunPhase.paused,
-        gpsStatus: 'UPLOAD FAILED',
-        error: '${_friendlyError(error)} Your samples remain on this device.',
+        phase: pending ? RunPhase.completed : RunPhase.paused,
+        gpsStatus: 'PENDING SYNC',
+        error: pending
+            ? 'Run saved on this device. Sync will retry when connected.'
+            : 'Could not save all samples. Check available storage before retrying.',
       );
     } finally {
       _busy = false;
+      state = state.copyWith(busy: false);
     }
   }
 
@@ -126,6 +204,9 @@ class RunController extends Notifier<RunSession> {
     _accelerations.clear();
     _accelerationTimes.clear();
     _monotonic.reset();
+    _movingSeconds = 0;
+    _writeError = null;
+    _writes = Future.value();
     state = const RunSession();
   }
 
@@ -144,40 +225,75 @@ class RunController extends Notifier<RunSession> {
   }
 
   void _startStreams() {
-    const settings = LocationSettings(
+    final settings = AndroidSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 5,
+      distanceFilter: 0,
+      intervalDuration: const Duration(seconds: 2),
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
+        notificationTitle: 'Recording run',
+        notificationText: 'Runova is recording your route. Tap to return.',
+        enableWakeLock: true,
+        setOngoing: true,
+      ),
     );
-    _positionSubscription = Geolocator.getPositionStream(locationSettings: settings).listen(
-      _onPosition,
-      onError: (Object error) {
-        state = state.copyWith(gpsStatus: 'GPS ERROR', error: _friendlyError(error));
-      },
-    );
+    _positionSubscription =
+        Geolocator.getPositionStream(locationSettings: settings).listen(
+          _onPosition,
+          onError: (Object error) {
+            _lastGpsAt = null;
+            state = state.copyWith(
+              gpsStatus: 'GPS ERROR',
+              error: _friendlyError(error),
+            );
+          },
+        );
     _segmentStartedMs = _monotonic.elapsedMilliseconds;
-    _sensorSubscription = userAccelerometerEventStream(
-      samplingPeriod: SensorInterval.gameInterval,
-    ).listen(_onAcceleration);
+    _sensorSubscription =
+        userAccelerometerEventStream(
+          samplingPeriod: SensorInterval.gameInterval,
+        ).listen(
+          _onAcceleration,
+          onError: (Object error) {
+            _lastSensorAt = null;
+            if (!_disposed) {
+              state = state.copyWith(
+                error: 'Motion sensor unavailable; GPS is still recorded.',
+              );
+            }
+          },
+        );
   }
 
-  Future<void> _onPosition(Position position) async {
+  void _onPosition(Position position) {
     if (state.phase != RunPhase.running || _remoteRun == null) return;
     final previous = _previousPosition;
+    _lastGpsAt = DateTime.now();
     var addedDistance = 0.0;
-    if (previous != null && position.accuracy <= 50) {
+    if (previous != null &&
+        previous.accuracy <= 50 &&
+        position.accuracy <= 50) {
       addedDistance = Geolocator.distanceBetween(
         previous.latitude,
         previous.longitude,
         position.latitude,
         position.longitude,
       );
-      final seconds = position.timestamp.difference(previous.timestamp).inMilliseconds / 1000;
+      final seconds =
+          position.timestamp.difference(previous.timestamp).inMilliseconds /
+          1000;
       if (seconds > 0) _latestSpeed = addedDistance / seconds;
-      if (_latestSpeed > 25) addedDistance = 0;
+      _movingSeconds += movingIntervalSeconds(
+        _latestSpeed,
+        seconds,
+        position.accuracy,
+      );
+      if (_latestSpeed > 25 || seconds <= 0 || seconds > 30) addedDistance = 0;
     }
     _previousPosition = position;
     final sequence = _pointSequence++;
-    await ref.read(runRepositoryProvider).storePoint(_remoteRun!.id, {
+    final repository = ref.read(runRepositoryProvider);
+    final runId = _remoteRun!.id;
+    final point = <String, Object?>{
       'sequence': sequence,
       'latitude': position.latitude,
       'longitude': position.longitude,
@@ -187,18 +303,23 @@ class RunController extends Notifier<RunSession> {
       'altitude': position.altitude,
       'speed': position.speed < 0 ? null : position.speed,
       'heading': position.heading < 0 ? null : position.heading,
-    });
+    };
+    _enqueue(() => repository.storePoint(runId, point));
     state = state.copyWith(
       distanceMeters: state.distanceMeters + addedDistance,
       gpsStatus: position.accuracy <= 35 ? 'GPS GOOD' : 'GPS WEAK',
       pointCount: _pointSequence,
       activityType: _localActivity(),
+      movingSeconds: _movingSeconds.floor(),
     );
   }
 
   void _onAcceleration(UserAccelerometerEvent event) {
     if (state.phase != RunPhase.running || _remoteRun == null) return;
-    final magnitude = math.sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
+    _lastSensorAt = DateTime.now();
+    final magnitude = math.sqrt(
+      event.x * event.x + event.y * event.y + event.z * event.z,
+    );
     _accelerations.add(magnitude);
     _accelerationTimes.add(_monotonic.elapsedMilliseconds);
     if (_monotonic.elapsedMilliseconds - _segmentStartedMs >= 5000) {
@@ -216,7 +337,8 @@ class RunController extends Notifier<RunSession> {
     final end = _monotonic.elapsedMilliseconds;
     _segmentStartedMs = end;
     final mean = samples.reduce((a, b) => a + b) / samples.length;
-    final variance = samples
+    final variance =
+        samples
             .map((sample) => math.pow(sample - mean, 2).toDouble())
             .reduce((a, b) => a + b) /
         samples.length;
@@ -235,14 +357,17 @@ class RunController extends Notifier<RunSession> {
         jerkTotal += (samples[index] - samples[index - 1]).abs() / deltaSeconds;
       }
     }
-    await ref.read(runRepositoryProvider).storeSensorSegment(_remoteRun!.id, {
+    final repository = ref.read(runRepositoryProvider);
+    final runId = _remoteRun!.id;
+    final segment = <String, Object?>{
       'sequence': _sensorSequence++,
       'start_ms': start,
       'end_ms': end,
       'acceleration_variance': variance,
       'cadence_hz': end > start ? peaks / ((end - start) / 1000) : 0.0,
       'mean_jerk': samples.length > 1 ? jerkTotal / (samples.length - 1) : 0.0,
-    });
+    };
+    _enqueue(() => repository.storeSensorSegment(runId, segment));
   }
 
   String _localActivity() {
@@ -256,7 +381,7 @@ class RunController extends Notifier<RunSession> {
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      state = state.copyWith(elapsed: state.elapsed + const Duration(seconds: 1));
+      state = state.copyWith(elapsed: _clock.activeElapsed(DateTime.now()));
     });
   }
 
@@ -266,6 +391,7 @@ class RunController extends Notifier<RunSession> {
     _positionSubscription = null;
     _sensorSubscription = null;
     await _flushSensorSegment();
+    await _writes;
   }
 
   void _disposeStreamsOnly() {
@@ -277,8 +403,49 @@ class RunController extends Notifier<RunSession> {
   }
 
   void _dispose() {
+    _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _disposeStreamsOnly();
     _monotonic.stop();
+  }
+
+  void _enqueue(Future<void> Function() write) {
+    _writes = _writes.then((_) => write()).catchError((Object error) {
+      _writeError = error;
+      if (!_disposed) {
+        state = state.copyWith(
+          error: 'Could not save a sample. Check device storage.',
+        );
+      }
+    });
+  }
+
+  @override
+  // ignore: avoid_renaming_method_parameters
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    if (lifecycle == AppLifecycleState.resumed &&
+        state.phase == RunPhase.running &&
+        !_busy) {
+      unawaited(_recoverStreams());
+    }
+  }
+
+  Future<void> _recoverStreams() async {
+    final now = DateTime.now();
+    state = state.copyWith(elapsed: _clock.activeElapsed(now));
+    if (_lastGpsAt != null &&
+        _lastSensorAt != null &&
+        now.difference(_lastGpsAt!).inSeconds < 30 &&
+        now.difference(_lastSensorAt!).inSeconds < 10) {
+      return;
+    }
+    _busy = true;
+    state = state.copyWith(busy: true);
+    await _stopStreams();
+    _previousPosition = null;
+    if (!_disposed && state.phase == RunPhase.running) _startStreams();
+    _busy = false;
+    if (!_disposed) state = state.copyWith(busy: false);
   }
 }
 

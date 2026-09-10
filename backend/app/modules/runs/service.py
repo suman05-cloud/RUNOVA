@@ -6,10 +6,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from geoalchemy2.elements import WKTElement
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.profiles.models import Device
+from app.modules.progression.models import PlayerProgress
 from app.modules.progression.service import award_run_progress, calculate_run_xp
 from app.modules.runs.activity import ActivityResult, classify_activity
 from app.modules.runs.models import (
@@ -27,11 +28,14 @@ from app.modules.runs.schemas import (
     CreateRunResponse,
     FinishRunRequest,
     FinishRunResponse,
+    RoutePointResponse,
     RunBatchRequest,
+    RunDetailResponse,
     TerritoryChangeResponse,
 )
 from app.modules.runs.trust import evaluate_gps_trust
 from app.modules.territories.h3_grid import cell_for_coordinate
+from app.modules.territories.models import TerritoryEvent
 from app.modules.territories.service import apply_run_to_territories
 
 
@@ -49,6 +53,9 @@ class RunStateError(Exception):
 
 class BatchConflictError(Exception):
     pass
+
+
+_MAX_ROUTE_POINTS = 5000
 
 
 async def create_run(
@@ -96,9 +103,7 @@ async def upload_run_batch(
     run_id: uuid.UUID,
     request: RunBatchRequest,
 ) -> BatchAcceptedResponse:
-    run = await _get_authorized_run(session, user_id, run_id, request.session_nonce)
-    if run.state != "STARTED":
-        raise RunStateError
+    run = await _get_authorized_run(session, user_id, run_id, request.session_nonce, lock=True)
 
     checksum = _batch_checksum(request)
     existing = await session.scalar(
@@ -116,6 +121,18 @@ async def upload_run_batch(
             sensor_segment_count=len(request.sensor_segments),
             duplicate=True,
         )
+
+    if run.state != "STARTED":
+        raise RunStateError
+    # Reject overlaps explicitly rather than leaking a database constraint error.
+    for model, sequences in (
+        (RunGpsPoint, [point.sequence for point in request.points]),
+        (RunSensorSegment, [segment.sequence for segment in request.sensor_segments]),
+    ):
+        if sequences and await session.scalar(
+            select(model.id).where(model.run_id == run_id, model.sequence.in_(sequences)).limit(1)
+        ):
+            raise BatchConflictError
 
     for point in request.points:
         session.add(
@@ -169,9 +186,7 @@ async def finish_run(
     run_id: uuid.UUID,
     request: FinishRunRequest,
 ) -> FinishRunResponse:
-    run = await _get_authorized_run(
-        session, user_id, run_id, request.session_nonce, lock=True
-    )
+    run = await _get_authorized_run(session, user_id, run_id, request.session_nonce, lock=True)
     if run.state == "FINISHED":
         return await _finished_response(session, run)
     if run.state != "STARTED":
@@ -212,15 +227,13 @@ async def finish_run(
 
     territory_changes = []
     if competitive:
-        territory_changes = await apply_run_to_territories(
-            session, user_id, run_id, route_points
-        )
+        territory_changes = await apply_run_to_territories(session, user_id, run_id, route_points)
 
-    multiplier = 1.0 if competitive else 0.5 if activity.activity_type == "WALKING" else 0.0
+    multiplier = 1.0 if competitive else 0.5 if status == "CASUAL_VALID" else 0.0
     xp = calculate_run_xp(distance, len(territory_changes), multiplier)
     competitive_score = round(distance / 1000 * 100) if competitive else 0
     _, level = await award_run_progress(
-        session, user_id, run_id, xp, competitive_score, run.rules_version
+        session, user_id, run_id, xp, competitive_score, run.rules_version, qualifying=competitive
     )
 
     run.state = "FINISHED"
@@ -246,6 +259,13 @@ async def finish_run(
     run.territories_changed = len(territory_changes)
     run.xp_earned = xp
     run.competitive_score = competitive_score
+    device_count = (
+        await session.scalar(
+            select(func.count()).select_from(Device).where(Device.user_id == user_id)
+        )
+        or 0
+    )
+    device_score = max(30, 80 - max(0, device_count - 3) * 10)
     session.add(
         RunValidation(
             run_id=run.id,
@@ -253,11 +273,16 @@ async def finish_run(
             motion_score=activity.confidence,
             activity_score=activity.confidence,
             route_score=round(road_match.confidence or 50),
-            device_score=100,
+            device_score=device_score,
             final_trust_score=trust_score,
             status=status,
             reason_codes=list(gps_trust.reason_codes) + _activity_reasons(activity),
-            metrics={**gps_trust.metrics, **activity.signals},
+            metrics={
+                **gps_trust.metrics,
+                **activity.signals,
+                "account_device_count": device_count,
+                "device_signal": "registration_count_only_not_attestation",
+            },
         )
     )
     await session.commit()
@@ -282,6 +307,78 @@ async def finish_run(
                 power_after=change.power_after,
             )
             for change in territory_changes
+        ],
+    )
+
+
+async def get_run_detail(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    run_id: uuid.UUID,
+    *,
+    include_route: bool = False,
+) -> RunDetailResponse:
+    # Owner-only lookup: another user's run is indistinguishable from a missing one.
+    run = await session.scalar(select(Run).where(Run.id == run_id, Run.user_id == user_id))
+    if run is None:
+        raise RunNotFoundError
+
+    route_points: list[RoutePointResponse] = []
+    route_truncated = False
+    if include_route:
+        rows = list(
+            (
+                await session.scalars(
+                    select(RunGpsPoint)
+                    .where(RunGpsPoint.run_id == run_id)
+                    .order_by(RunGpsPoint.sequence)
+                    .limit(_MAX_ROUTE_POINTS + 1)
+                )
+            ).all()
+        )
+        route_truncated = len(rows) > _MAX_ROUTE_POINTS
+        route_points = [
+            RoutePointResponse(
+                sequence=row.sequence,
+                latitude=row.latitude,
+                longitude=row.longitude,
+                recorded_at=row.client_recorded_at,
+                accuracy_meters=row.accuracy_meters,
+            )
+            for row in rows[:_MAX_ROUTE_POINTS]
+        ]
+    events = (
+        await session.scalars(
+            select(TerritoryEvent)
+            .where(TerritoryEvent.run_id == run_id)
+            .order_by(TerritoryEvent.id)
+        )
+    ).all()
+    progress = await session.get(PlayerProgress, user_id)
+    return RunDetailResponse(
+        id=run.id,
+        started_at=run.server_started_at,
+        finished_at=run.finished_at,
+        distance_meters=float(run.distance_meters),
+        elapsed_seconds=run.elapsed_seconds,
+        moving_seconds=run.moving_seconds,
+        validation_status=run.validation_status,
+        activity_type=run.activity_type,
+        trust_score=run.trust_score,
+        competitive_eligible=run.competitive_eligible,
+        xp_earned=run.xp_earned,
+        territories_changed=run.territories_changed,
+        route_points=route_points,
+        route_truncated=route_truncated,
+        level=progress.level if progress else 1,
+        territory_changes=[
+            TerritoryChangeResponse(
+                cell_id=event.cell_id,
+                action=event.action_type,
+                power_before=float(event.power_before),
+                power_after=float(event.power_after),
+            )
+            for event in events
         ],
     )
 

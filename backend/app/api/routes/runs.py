@@ -15,6 +15,7 @@ from app.modules.runs.schemas import (
     FinishRunRequest,
     FinishRunResponse,
     RunBatchRequest,
+    RunDetailResponse,
     RunSummaryResponse,
 )
 from app.modules.runs.service import (
@@ -24,11 +25,25 @@ from app.modules.runs.service import (
     RunStateError,
     create_run,
     finish_run,
+    get_run_detail,
     upload_run_batch,
 )
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 SessionDependency = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+@router.get("/{run_id}", response_model=RunDetailResponse)
+async def run_detail(
+    run_id: uuid.UUID,
+    user_id: CurrentUserId,
+    session: SessionDependency,
+    include_route: bool = False,
+) -> RunDetailResponse:
+    try:
+        return await get_run_detail(session, user_id, run_id, include_route=include_route)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
 
 
 @router.post("", response_model=CreateRunResponse, status_code=status.HTTP_201_CREATED)
@@ -82,6 +97,7 @@ async def list_runs(
     user_id: CurrentUserId,
     session: SessionDependency,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[RunSummaryResponse]:
     rows = list(
         (
@@ -90,6 +106,7 @@ async def list_runs(
                 .where(Run.user_id == user_id)
                 .order_by(Run.server_started_at.desc())
                 .limit(limit)
+                .offset(offset)
             )
         ).all()
     )

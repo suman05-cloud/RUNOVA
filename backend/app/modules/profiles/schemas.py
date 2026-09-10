@@ -27,3 +27,10 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     expires_at: datetime
     profile: ProfileResponse
+
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=80)
+    city: str | None = Field(default=None, min_length=1, max_length=100)
+    country_code: str | None = Field(default=None, pattern=r"^[A-Za-z]{2}$")
+    profile_is_public: bool | None = None

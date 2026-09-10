@@ -4,7 +4,10 @@ import 'package:runova/features/auth/data/auth_repository.dart';
 import 'package:runova/features/auth/domain/user_profile.dart';
 
 final authRepositoryProvider = Provider<AuthRepository>(
-  (ref) => AuthRepository(ref.watch(apiClientProvider), ref.watch(authStoreProvider)),
+  (ref) => AuthRepository(
+    ref.watch(apiClientProvider),
+    ref.watch(authStoreProvider),
+  ),
 );
 
 final authControllerProvider =
@@ -12,7 +15,18 @@ final authControllerProvider =
 
 class AuthController extends AsyncNotifier<UserProfile?> {
   @override
-  Future<UserProfile?> build() async => null;
+  Future<UserProfile?> build() async {
+    final store = ref.watch(authStoreProvider);
+    void expired() => state = const AsyncData(null);
+    store.addListener(expired);
+    ref.onDispose(() => store.removeListener(expired));
+    return ref.read(authRepositoryProvider).restore();
+  }
+
+  Future<void> updateProfile(Map<String, dynamic> changes) async {
+    final profile = await ref.read(authRepositoryProvider).update(changes);
+    state = AsyncData(profile);
+  }
 
   Future<bool> login({
     required String email,
@@ -21,7 +35,9 @@ class AuthController extends AsyncNotifier<UserProfile?> {
   }) async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(
-      () => ref.read(authRepositoryProvider).directLogin(
+      () => ref
+          .read(authRepositoryProvider)
+          .directLogin(
             email: email,
             username: username,
             displayName: displayName,

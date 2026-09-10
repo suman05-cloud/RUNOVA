@@ -56,6 +56,11 @@ class RunBatchRequest(BaseModel):
     def sequences_match_envelope(self) -> "RunBatchRequest":
         if self.last_sequence < self.first_sequence:
             raise ValueError("last_sequence must not be before first_sequence")
+        sensor_sequences = [segment.sequence for segment in self.sensor_segments]
+        if len(sensor_sequences) != len(set(sensor_sequences)):
+            raise ValueError("sensor sequences must be unique")
+        if any(s.end_monotonic_ms < s.start_monotonic_ms for s in self.sensor_segments):
+            raise ValueError("sensor segment ends before its start")
         if self.points:
             sequences = [point.sequence for point in self.points]
             if min(sequences) < self.first_sequence or max(sequences) > self.last_sequence:
@@ -77,6 +82,12 @@ class FinishRunRequest(BaseModel):
     client_finished_at: datetime
     elapsed_seconds: int = Field(ge=0, le=604_800)
     moving_seconds: int = Field(ge=0, le=604_800)
+
+    @model_validator(mode="after")
+    def valid_duration(self) -> "FinishRunRequest":
+        if self.moving_seconds > self.elapsed_seconds:
+            raise ValueError("moving_seconds exceeds elapsed_seconds")
+        return self
 
 
 class TerritoryChangeResponse(BaseModel):
@@ -113,3 +124,29 @@ class RunSummaryResponse(BaseModel):
     xp_earned: int
     territories_changed: int
 
+
+class RoutePointResponse(BaseModel):
+    sequence: int
+    latitude: float
+    longitude: float
+    recorded_at: datetime
+    accuracy_meters: float
+
+
+class RunDetailResponse(BaseModel):
+    id: uuid.UUID
+    started_at: datetime
+    finished_at: datetime | None
+    distance_meters: float
+    elapsed_seconds: int
+    moving_seconds: int
+    validation_status: str
+    activity_type: str | None
+    trust_score: int | None
+    competitive_eligible: bool
+    xp_earned: int
+    territories_changed: int
+    level: int = 1
+    route_points: list[RoutePointResponse] = Field(default_factory=list)
+    territory_changes: list[TerritoryChangeResponse] = Field(default_factory=list)
+    route_truncated: bool = False

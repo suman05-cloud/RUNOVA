@@ -15,6 +15,10 @@ cash prizes, and machine-learning anti-cheat are intentionally excluded.
 
 ## Implemented vertical slice
 
+See [next milestone implementation and verification gates](docs/next-milestones.md)
+for session restore, usable history/profiles, background recording, durable sync,
+backend hardening, and the remaining device/database checks.
+
 - Development account creation with email, unique username, profile, JWT, and logout.
 - Android GPS recording and accelerometer feature collection with an offline SQLite queue.
 - Idempotent GPS/sensor upload and server-authoritative distance/trust calculation.

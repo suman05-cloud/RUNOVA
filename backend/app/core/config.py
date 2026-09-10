@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://runova:runova@localhost:5432/runova"
     redis_url: str = "redis://localhost:6379/0"
     cors_origins: list[str] = Field(default_factory=list)
+    rate_limit_enabled: bool = True
+    rate_limit_auth_per_minute: int = Field(default=10, ge=1)
+    rate_limit_api_per_minute: int = Field(default=240, ge=1)
 
     dev_login_enabled: bool = True
     dev_jwt_secret: str = "runova-local-development-secret-change-before-sharing"

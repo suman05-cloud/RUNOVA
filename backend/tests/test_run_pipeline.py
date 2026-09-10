@@ -8,7 +8,7 @@ from app.main import app
 
 
 @pytest.mark.asyncio
-async def test_account_run_validation_territory_and_leaderboard_pipeline() -> None:
+async def test_account_run_validation_territory_and_leaderboard_pipeline(database) -> None:
     unique = uuid.uuid4().hex[:12]
     now = datetime.now(UTC)
     async with AsyncClient(
