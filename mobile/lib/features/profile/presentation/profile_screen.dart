@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:runova/core/network/api_client.dart';
-import 'package:runova/core/theme/runova_theme.dart';
+import 'package:runova/core/theme/appearance_controller.dart';
 import 'package:runova/features/auth/presentation/auth_controller.dart';
 import 'package:runova/features/leaderboard/presentation/leaderboard_screen.dart';
 import 'package:runova/features/run/presentation/run_controller.dart';
@@ -28,15 +28,30 @@ class ProfileScreen extends ConsumerWidget {
     final xp = progression.value?['fitness_xp'] ?? 0;
     return SafeArea(
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 112),
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
         children: [
-          const CircleAvatar(
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  'Your profile',
+                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
+                ),
+              ),
+              AppearanceButton(),
+            ],
+          ),
+          const SizedBox(height: 24),
+          CircleAvatar(
             radius: 44,
-            backgroundColor: RunovaColors.elevatedSurface,
+            backgroundColor: Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest,
             child: Icon(
               Icons.person_rounded,
               size: 46,
-              color: RunovaColors.primary,
+              color: Theme.of(context).colorScheme.primary,
             ),
           ),
           const SizedBox(height: 14),
@@ -44,27 +59,45 @@ class ProfileScreen extends ConsumerWidget {
             profile?.displayName ?? profile?.username ?? 'Runner',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w900),
+                ?.copyWith(fontWeight: FontWeight.w600),
           ),
           Text(
             profile == null
                 ? 'Runova profile'
                 : '@${profile.username} · ${profile.email}',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: RunovaColors.textMuted),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             'Level $level · $xp Fitness XP',
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: RunovaColors.primary,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.primary,
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 28),
+          Text(
+            '${progression.value?['territory_points'] ?? 0} territory points',
+            textAlign: TextAlign.center,
+          ),
           const Text(
             'Your raw GPS routes are private and only loaded when you choose to view them.',
+          ),
+          const SizedBox(height: 10),
+          _ProfileItem(
+            icon: Icons.notifications_outlined,
+            label: 'Events and notifications',
+            onTap: () => context.push('/events'),
+          ),
+          const SizedBox(height: 10),
+          _ProfileItem(
+            icon: Icons.settings_outlined,
+            label: 'Settings',
+            onTap: () => context.push('/settings'),
           ),
           const SizedBox(height: 10),
           _ProfileItem(
@@ -79,6 +112,41 @@ class ProfileScreen extends ConsumerWidget {
             onTap: () => showDialog<void>(
               context: context,
               builder: (context) => const _EditProfileDialog(),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Appearance',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: ThemeMode.values
+                        .map(
+                          (mode) => ChoiceChip(
+                            label: Text(switch (mode) {
+                              ThemeMode.light => 'Light',
+                              ThemeMode.dark => 'Dark',
+                              ThemeMode.system => 'Auto',
+                            }),
+                            selected: ref.watch(themeModeProvider) == mode,
+                            onSelected: (_) => ref
+                                .read(themeModeProvider.notifier)
+                                .select(mode),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 18),
@@ -114,7 +182,7 @@ class _ProfileItem extends StatelessWidget {
     return Card(
       child: ListTile(
         onTap: onTap,
-        leading: Icon(icon, color: RunovaColors.primary),
+        leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
         title: Text(label),
         trailing: const Icon(Icons.chevron_right_rounded),
       ),
@@ -131,6 +199,7 @@ class _EditProfileDialog extends ConsumerStatefulWidget {
 class _EditProfileDialogState extends ConsumerState<_EditProfileDialog> {
   late final TextEditingController _name;
   late final TextEditingController _city;
+  late final TextEditingController _state;
   late final TextEditingController _country;
   bool _public = false;
   bool _saving = false;
@@ -141,6 +210,7 @@ class _EditProfileDialogState extends ConsumerState<_EditProfileDialog> {
     final user = ref.read(authControllerProvider).value!;
     _name = TextEditingController(text: user.displayName);
     _city = TextEditingController(text: user.city);
+    _state = TextEditingController(text: user.stateRegion);
     _country = TextEditingController(text: user.countryCode);
     _public = user.isPublic;
   }
@@ -149,6 +219,7 @@ class _EditProfileDialogState extends ConsumerState<_EditProfileDialog> {
   void dispose() {
     _name.dispose();
     _city.dispose();
+    _state.dispose();
     _country.dispose();
     super.dispose();
   }
@@ -162,6 +233,7 @@ class _EditProfileDialogState extends ConsumerState<_EditProfileDialog> {
       await ref.read(authControllerProvider.notifier).updateProfile({
         'display_name': _name.text.trim().isEmpty ? null : _name.text.trim(),
         'city': _city.text.trim().isEmpty ? null : _city.text.trim(),
+        'state_region': _state.text.trim().isEmpty ? null : _state.text.trim(),
         'country_code': _country.text.trim().toUpperCase(),
         'profile_is_public': _public,
       });
@@ -198,6 +270,10 @@ class _EditProfileDialogState extends ConsumerState<_EditProfileDialog> {
             controller: _country,
             maxLength: 2,
             decoration: const InputDecoration(labelText: 'Country code'),
+          ),
+          TextField(
+            controller: _state,
+            decoration: const InputDecoration(labelText: 'State / region'),
           ),
           SwitchListTile(
             title: const Text('Public profile'),

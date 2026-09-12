@@ -19,6 +19,7 @@ class ProfileResponse(BaseModel):
     display_name: str | None
     country_code: str
     city: str | None
+    state_region: str | None = None
     profile_is_public: bool
 
 
@@ -30,6 +31,7 @@ class LoginResponse(BaseModel):
 
 
 class ProfileUpdateRequest(BaseModel):
+    state_region: str | None = Field(default=None, min_length=1, max_length=100)
     display_name: str | None = Field(default=None, min_length=1, max_length=80)
     city: str | None = Field(default=None, min_length=1, max_length=100)
     country_code: str | None = Field(default=None, pattern=r"^[A-Za-z]{2}$")

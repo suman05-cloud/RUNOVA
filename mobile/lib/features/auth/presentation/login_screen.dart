@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:runova/core/theme/runova_theme.dart';
+import 'package:runova/core/theme/appearance_controller.dart';
+import 'package:runova/core/widgets/trail_artwork.dart';
 import 'package:runova/features/auth/presentation/auth_controller.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -28,7 +30,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    final success = await ref.read(authControllerProvider.notifier).login(
+    final success = await ref
+        .read(authControllerProvider.notifier)
+        .login(
           email: _email.text,
           username: _username.text,
           displayName: _displayName.text,
@@ -51,26 +55,51 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Icon(Icons.route_rounded, size: 64, color: RunovaColors.primary),
-                    const SizedBox(height: 16),
+                    const Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'RUNOVA',
+                          style: TextStyle(
+                            fontSize: 14,
+                            letterSpacing: 3,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        AppearanceButton(),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(28),
+                      child: const SizedBox(height: 190, child: TrailArtwork()),
+                    ),
+                    const SizedBox(height: 28),
                     Text(
-                      'RUNOVA',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                            fontWeight: FontWeight.w900,
+                      'Good things start\nwith a small step.',
+                      style: Theme.of(context).textTheme.headlineLarge
+                          ?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -1,
+                            height: 1.15,
                           ),
                     ),
-                    const Text(
+                    const SizedBox(height: 12),
+                    Text(
                       'Create your runner profile',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: RunovaColors.textMuted),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 26),
                     TextFormField(
                       key: const Key('email-field'),
                       controller: _email,
                       keyboardType: TextInputType.emailAddress,
-                      decoration: const InputDecoration(labelText: 'Email'),
+                      decoration: const InputDecoration(
+                        labelText: 'Email',
+                        prefixIcon: Icon(Icons.mail_outline_rounded),
+                      ),
                       validator: (value) => value != null && value.contains('@')
                           ? null
                           : 'Enter a valid email',
@@ -79,15 +108,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     TextFormField(
                       key: const Key('username-field'),
                       controller: _username,
-                      decoration: const InputDecoration(labelText: 'Username'),
-                      validator: (value) => value != null && value.trim().length >= 3
+                      decoration: const InputDecoration(
+                        labelText: 'Username',
+                        prefixIcon: Icon(Icons.person_outline_rounded),
+                      ),
+                      validator: (value) =>
+                          value != null && value.trim().length >= 3
                           ? null
                           : 'Use at least 3 characters',
                     ),
                     const SizedBox(height: 14),
                     TextFormField(
                       controller: _displayName,
-                      decoration: const InputDecoration(labelText: 'Display name (optional)'),
+                      decoration: const InputDecoration(
+                        labelText: 'Display name (optional)',
+                        prefixIcon: Icon(Icons.badge_outlined),
+                      ),
                     ),
                     const SizedBox(height: 22),
                     FilledButton(
@@ -100,14 +136,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       Text(
                         _errorMessage(auth.error),
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: RunovaColors.danger),
+                        style: TextStyle(color: RunovaColors.danger),
                       ),
                     ],
-                    const SizedBox(height: 18),
-                    const Text(
+                    SizedBox(height: 18),
+                    Text(
                       'Development login for the MVP. Email OTP will replace this before release.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: RunovaColors.textMuted, fontSize: 12),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),

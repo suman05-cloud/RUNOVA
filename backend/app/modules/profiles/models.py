@@ -31,6 +31,7 @@ class Profile(TimestampMixin, Base):
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     country_code: Mapped[str] = mapped_column(String(2), default="IN", server_default="IN")
     city: Mapped[str | None] = mapped_column(String(100), index=True)
+    state_region: Mapped[str | None] = mapped_column(String(100), index=True)
     account_status: Mapped[str] = mapped_column(
         String(20), default="ACTIVE", server_default="ACTIVE", index=True
     )

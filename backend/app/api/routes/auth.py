@@ -19,6 +19,7 @@ from app.modules.profiles.service import UsernameUnavailableError, direct_login
 from app.modules.progression.models import PlayerProgress
 from app.modules.progression.schemas import ProgressResponse
 from app.modules.progression.service import current_streak, refresh_city_scores
+from app.modules.territories.game import expire_territories
 from app.modules.territories.models import Territory
 
 router = APIRouter(tags=["authentication"])
@@ -69,6 +70,7 @@ async def current_progression(
     user_id: CurrentUserId,
     session: SessionDependency,
 ) -> ProgressResponse:
+    await expire_territories(session)
     progress = await session.get(PlayerProgress, user_id)
     owned = (
         await session.scalar(
@@ -76,6 +78,12 @@ async def current_progression(
         )
         or 0
     )
+    territory_points = await session.scalar(
+        select(func.coalesce(func.sum(Territory.reward_points), 0)).where(
+            Territory.owner_id == user_id
+        )
+    )
+    await session.commit()
     if progress is None:
         return ProgressResponse(
             fitness_xp=0,
@@ -83,6 +91,7 @@ async def current_progression(
             current_streak_days=0,
             longest_streak_days=0,
             territories_owned=owned,
+            territory_points=territory_points,
         )
     return ProgressResponse(
         fitness_xp=progress.fitness_xp,
@@ -90,6 +99,7 @@ async def current_progression(
         current_streak_days=current_streak(progress, datetime.now(UTC)),
         longest_streak_days=progress.longest_streak_days,
         territories_owned=owned,
+        territory_points=territory_points,
     )
 
 
@@ -129,5 +139,6 @@ def _profile_response(profile: Profile, email: str) -> ProfileResponse:
         display_name=profile.display_name,
         country_code=profile.country_code,
         city=profile.city,
+        state_region=profile.state_region,
         profile_is_public=profile.profile_is_public,
     )

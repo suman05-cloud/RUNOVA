@@ -7,3 +7,4 @@ class ProgressResponse(BaseModel):
     current_streak_days: int
     longest_streak_days: int
     territories_owned: int = 0
+    territory_points: float = 0

@@ -64,11 +64,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('START A RUN'), findsOneWidget);
+      expect(find.text('Start a run'), findsOneWidget);
       final router = container.read(runovaRouterProvider);
       router.go('/login');
       await tester.pumpAndSettle();
-      expect(find.text('START A RUN'), findsOneWidget);
+      expect(find.text('Start a run'), findsOneWidget);
       await container.read(authStoreProvider).clearToken();
       await tester.pumpAndSettle();
       expect(find.text('Create your runner profile'), findsOneWidget);

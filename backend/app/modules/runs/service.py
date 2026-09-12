@@ -2,7 +2,7 @@ import hashlib
 import json
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from geoalchemy2.elements import WKTElement
@@ -34,9 +34,9 @@ from app.modules.runs.schemas import (
     TerritoryChangeResponse,
 )
 from app.modules.runs.trust import evaluate_gps_trust
+from app.modules.territories.game import RULES_VERSION, capture_loops, expire_territories
 from app.modules.territories.h3_grid import cell_for_coordinate
 from app.modules.territories.models import TerritoryEvent
-from app.modules.territories.service import apply_run_to_territories
 
 
 class RunNotFoundError(Exception):
@@ -85,6 +85,7 @@ async def create_run(
         device_id=device.id,
         client_started_at=request.client_started_at,
         session_nonce_hash=_hash_nonce(nonce),
+        rules_version=RULES_VERSION,
     )
     session.add(run)
     await session.commit()
@@ -225,15 +226,34 @@ async def finish_run(
     road_match = await match_route_to_roads(route_points)
     trust_score, status, competitive = _run_verdict(gps_trust.score, activity)
 
+    # Both walking and running can capture. A meaningful verified activity protects ownership.
+    await expire_territories(session)
+    recorded_seconds = (route_points[-1].monotonic_ms / 1000) if route_points else 0
+    activity_end = min(
+        datetime.now(UTC), run.server_started_at + timedelta(seconds=recorded_seconds)
+    )
+    server_seconds = (datetime.now(UTC) - run.server_started_at).total_seconds()
+    qualifying = (
+        competitive and distance >= 100 and 60 <= recorded_seconds <= server_seconds + 30
+    )
     territory_changes = []
-    if competitive:
-        territory_changes = await apply_run_to_territories(session, user_id, run_id, route_points)
+    if qualifying:
+        territory_changes = await capture_loops(
+            session, user_id, run_id, route_points, run.server_started_at, activity_end
+        )
 
     multiplier = 1.0 if competitive else 0.5 if status == "CASUAL_VALID" else 0.0
     xp = calculate_run_xp(distance, len(territory_changes), multiplier)
     competitive_score = round(distance / 1000 * 100) if competitive else 0
     _, level = await award_run_progress(
-        session, user_id, run_id, xp, competitive_score, run.rules_version, qualifying=competitive
+        session,
+        user_id,
+        run_id,
+        xp,
+        competitive_score,
+        run.rules_version,
+        qualifying=qualifying,
+        qualifying_at=activity_end,
     )
 
     run.state = "FINISHED"
@@ -444,11 +464,17 @@ async def _finished_response(session: AsyncSession, run: Run) -> FinishRunRespon
 
 
 def _run_verdict(gps_score: int, activity: ActivityResult) -> tuple[int, str, bool]:
-    activity_weight = activity.confidence if activity.activity_type == "RUNNING" else 20
+    activity_weight = (
+        activity.confidence if activity.activity_type in {"RUNNING", "WALKING"} else 20
+    )
     trust_score = round(gps_score * 0.7 + activity_weight * 0.3)
     if activity.activity_type in {"CAR", "CYCLING"}:
         return min(trust_score, 39), "SUSPICIOUS", False
-    if activity.activity_type == "RUNNING" and gps_score >= 60 and activity.confidence >= 60:
+    if (
+        activity.activity_type in {"RUNNING", "WALKING"}
+        and gps_score >= 60
+        and activity.confidence >= 60
+    ):
         return trust_score, "VERIFIED", True
     if activity.activity_type == "WALKING" and gps_score >= 50:
         return trust_score, "CASUAL_VALID", False
@@ -460,8 +486,8 @@ def _activity_reasons(activity: ActivityResult) -> list[str]:
         return ["VEHICLE_ACTIVITY"]
     if activity.activity_type == "CYCLING":
         return ["CYCLING_ACTIVITY"]
-    if activity.activity_type != "RUNNING":
-        return ["NOT_CONFIDENT_RUNNING"]
+    if activity.activity_type not in {"RUNNING", "WALKING"}:
+        return ["NOT_CONFIDENT_FOOT_ACTIVITY"]
     return []
 
 

@@ -1,17 +1,15 @@
-from datetime import UTC, datetime
+import json
 from typing import Annotated
 
-import h3
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import CurrentUserId
 from app.db.session import get_db_session
 from app.modules.profiles.models import Profile
-from app.modules.territories.h3_grid import cell_boundary
+from app.modules.territories.game import expire_territories
 from app.modules.territories.models import Territory
-from app.modules.territories.rules import DEFAULT_TERRITORY_RULES, effective_power
 from app.modules.territories.schemas import TerritoryMapItem
 
 router = APIRouter(prefix="/territories", tags=["territories"])
@@ -27,39 +25,38 @@ async def territory_map(
     min_lng: Annotated[float, Query(ge=-180, le=180)],
     max_lng: Annotated[float, Query(ge=-180, le=180)],
 ) -> list[TerritoryMapItem]:
-    if min_lat > max_lat or min_lng > max_lng:
+    if min_lat >= max_lat or min_lng >= max_lng:
         return []
+    await expire_territories(session)
+    bounds = func.ST_MakeEnvelope(min_lng, min_lat, max_lng, max_lat, 4326)
     rows = (
         await session.execute(
-            select(Territory, Profile.username)
+            select(Territory, Profile.username, func.ST_AsGeoJSON(Territory.geometry))
             .outerjoin(Profile, Profile.id == Territory.owner_id)
-            .limit(5000)
+            .where(
+                Territory.geometry.is_not(None),
+                (Territory.owner_id.is_not(None)) | Territory.released_at.is_not(None),
+                ~func.ST_IsEmpty(Territory.geometry),
+                func.ST_Intersects(Territory.geometry, bounds),
+            )
         )
     ).all()
-    now = datetime.now(UTC)
-    items: list[TerritoryMapItem] = []
-    for territory, username in rows:
-        latitude, longitude = h3.cell_to_latlng(territory.cell_id)
-        if not (min_lat <= latitude <= max_lat and min_lng <= longitude <= max_lng):
-            continue
-        boundary = cell_boundary(territory.cell_id)
-        coordinates = [[longitude, latitude] for longitude, latitude in boundary]
-        coordinates.append(coordinates[0])
+    items = []
+    for territory, username, geometry in rows:
+        mine = territory.owner_id == user_id
+        state = "MINE" if mine else "TAKEN" if territory.owner_id else "OPEN"
         items.append(
             TerritoryMapItem(
                 cell_id=territory.cell_id,
                 owner_id=territory.owner_id,
                 owner_username=username,
-                is_current_user=territory.owner_id == user_id,
-                power=effective_power(
-                    float(territory.base_power),
-                    territory.power_updated_at,
-                    now,
-                    DEFAULT_TERRITORY_RULES,
-                ),
-                coordinates=coordinates,
+                is_current_user=mine,
+                power=100 if territory.owner_id else 0,
+                geometry=json.loads(geometry),
+                state=state,
+                reward_points=float(territory.reward_points),
+                can_capture=state == "OPEN",
             )
         )
-        if len(items) >= 1000:
-            break
+    await session.commit()
     return items

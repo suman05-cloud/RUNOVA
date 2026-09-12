@@ -135,7 +135,7 @@ async def test_run_authz_conflicts_profile_city_and_finish_retry(database):
         assert again.json()["xp_earned"] == done.json()["xp_earned"]
         progress = (await client.get("/v1/me/progression", headers=owner)).json()
         assert progress["fitness_xp"] == done.json()["xp_earned"]
-        assert progress["current_streak_days"] == 1
+        assert progress["current_streak_days"] == 0  # One second is not qualifying activity.
         local = (
             await client.get("/v1/leaderboards?scope=CITY&scope_key=Test%20City", headers=owner)
         ).json()
@@ -148,8 +148,8 @@ async def test_run_authz_conflicts_profile_city_and_finish_retry(database):
 
 
 @pytest.mark.asyncio
-async def test_attack_then_capture(database):
-    from sqlalchemy import update
+async def test_taken_grid_cannot_be_attacked_by_crossing(database):
+    from sqlalchemy import insert, select
 
     from app.modules.territories.h3_grid import cell_for_coordinate
     from app.modules.territories.models import Territory
@@ -157,37 +157,33 @@ async def test_attack_then_capture(database):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         owner = await login(client)
         attacker = await login(client)
+        owner_id = uuid.UUID((await client.get("/v1/me", headers=owner)).json()["id"])
         cell = cell_for_coordinate(23.123, 88.123)
-        for headers, expected in [(owner, None), (attacker, "ATTACKED"), (attacker, "CAPTURED")]:
-            run = await start(client, headers)
-            payload = batch(run)
-            path = f"/v1/runs/{run['run_id']}"
-            await client.put(path + "/batches", headers=headers, json=payload)
-            response = await client.post(
-                path + "/finish",
-                headers=headers,
-                json={
-                    "session_nonce": run["session_nonce"],
-                    "client_finished_at": datetime.now(UTC).isoformat(),
-                    "elapsed_seconds": 10,
-                    "moving_seconds": 1,
-                },
+        await database.execute(
+            insert(Territory).values(
+                cell_id=cell,
+                h3_resolution=10,
+                owner_id=owner_id,
+                base_power=100,
+                power_updated_at=datetime.now(UTC),
             )
-            assert response.status_code == 200, response.text
-            if expected:
-                event = next(
-                    c for c in response.json()["territory_changes"] if c["cell_id"] == cell
-                )
-                assert event["action"] == expected
-            else:
-                await database.execute(
-                    update(Territory)
-                    .where(Territory.cell_id == cell)
-                    .values(
-                        owner_id=uuid.UUID(
-                            (await client.get("/v1/me", headers=owner)).json()["id"]
-                        ),
-                        base_power=40,
-                        power_updated_at=datetime.now(UTC),
-                    )
-                )
+        )
+        run = await start(client, attacker)
+        path = f"/v1/runs/{run['run_id']}"
+        await client.put(path + "/batches", headers=attacker, json=batch(run))
+        response = await client.post(
+            path + "/finish",
+            headers=attacker,
+            json={
+                "session_nonce": run["session_nonce"],
+                "client_finished_at": datetime.now(UTC).isoformat(),
+                "elapsed_seconds": 10,
+                "moving_seconds": 1,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["territory_changes"] == []
+        assert (
+            await database.scalar(select(Territory.owner_id).where(Territory.cell_id == cell))
+            == owner_id
+        )

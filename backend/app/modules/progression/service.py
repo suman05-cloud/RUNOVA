@@ -92,6 +92,7 @@ async def award_run_progress(
     competitive_score: int,
     rules_version: str,
     qualifying: bool = False,
+    qualifying_at: datetime | None = None,
 ) -> tuple[int, int]:
     progress = await session.scalar(
         select(PlayerProgress).where(PlayerProgress.user_id == user_id).with_for_update()
@@ -102,7 +103,7 @@ async def award_run_progress(
         await session.flush()
 
     if qualifying:
-        apply_streak(progress, datetime.now(UTC))
+        apply_streak(progress, qualifying_at or datetime.now(UTC))
 
     if xp > 0:
         session.add(

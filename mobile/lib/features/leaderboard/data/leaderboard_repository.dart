@@ -13,7 +13,8 @@ class LeaderboardEntry {
   final double score;
   final bool isCurrentUser;
 
-  factory LeaderboardEntry.fromJson(Map<String, dynamic> json) => LeaderboardEntry(
+  factory LeaderboardEntry.fromJson(Map<String, dynamic> json) =>
+      LeaderboardEntry(
         rank: json['rank'] as int,
         username: json['username'] as String,
         score: (json['score'] as num).toDouble(),
@@ -26,13 +27,15 @@ class LeaderboardRepository {
 
   final Dio _dio;
 
-  Future<List<LeaderboardEntry>> globalFitnessXp() async {
+  Future<List<LeaderboardEntry>> territoryPoints(String scope) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/v1/leaderboards',
-      queryParameters: {'scope': 'GLOBAL', 'category': 'FITNESS_XP'},
+      queryParameters: {'scope': scope, 'category': 'TERRITORY_POINTS'},
     );
     return (response.data!['entries'] as List<dynamic>)
-        .map((entry) => LeaderboardEntry.fromJson(entry as Map<String, dynamic>))
+        .map(
+          (entry) => LeaderboardEntry.fromJson(entry as Map<String, dynamic>),
+        )
         .toList();
   }
 }

@@ -11,11 +11,12 @@ from app.modules.runs.models import (
     RunUploadBatch,
     RunValidation,
 )
-from app.modules.territories.models import Territory, TerritoryEvent
+from app.modules.territories.models import DailyCaptureTask, Territory, TerritoryEvent
 
 __all__ = [
     "Account",
     "Device",
+    "DailyCaptureTask",
     "LeaderboardScore",
     "PlayerProgress",
     "Profile",

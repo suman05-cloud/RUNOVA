@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:runova/app/shell.dart';
+import 'package:runova/features/events/presentation/events_screen.dart';
+import 'package:runova/features/settings/presentation/settings_screen.dart';
 import 'package:runova/features/auth/presentation/login_screen.dart';
 import 'package:runova/features/auth/presentation/auth_controller.dart';
 import 'package:runova/features/history/presentation/run_detail_screen.dart';
@@ -40,6 +42,33 @@ final runovaRouterProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
+      GoRoute(
+        path: '/events',
+        builder: (context, state) => const EventsScreen(),
+      ),
+      GoRoute(
+        path: '/settings',
+        builder: (context, state) => const SettingsScreen(),
+        routes: [
+          GoRoute(
+            path: 'app',
+            builder: (context, state) => const AppSettingsScreen(),
+          ),
+          GoRoute(
+            path: 'notifications',
+            builder: (context, state) =>
+                const AppSettingsScreen(notificationsOnly: true),
+          ),
+          GoRoute(
+            path: 'help',
+            builder: (context, state) => const HelpScreen(),
+          ),
+          GoRoute(
+            path: 'contact',
+            builder: (context, state) => const ContactScreen(),
+          ),
+        ],
+      ),
       GoRoute(
         path: '/loading',
         builder: (context, state) => const SessionLoadingScreen(),

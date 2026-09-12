@@ -96,7 +96,7 @@ async def test_account_run_validation_territory_and_leaderboard_pipeline(databas
         assert result["validation_status"] == "VERIFIED"
         assert result["competitive_eligible"] is True
         assert result["xp_earned"] > 0
-        assert result["territory_changes"]
+        assert result["territory_changes"] == []  # Crossing a grid is not a closed loop.
 
         progression = await client.get("/v1/me/progression", headers=headers)
         assert progression.status_code == 200

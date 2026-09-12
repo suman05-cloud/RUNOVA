@@ -5,6 +5,7 @@ class UserProfile {
     required this.username,
     this.displayName,
     this.city,
+    this.stateRegion,
     this.countryCode = 'IN',
     this.isPublic = false,
   });
@@ -14,6 +15,7 @@ class UserProfile {
   final String username;
   final String? displayName;
   final String? city;
+  final String? stateRegion;
   final String countryCode;
   final bool isPublic;
 
@@ -23,6 +25,7 @@ class UserProfile {
     username: json['username'] as String,
     displayName: json['display_name'] as String?,
     city: json['city'] as String?,
+    stateRegion: json['state_region'] as String?,
     countryCode: json['country_code'] as String? ?? 'IN',
     isPublic: json['profile_is_public'] as bool? ?? false,
   );

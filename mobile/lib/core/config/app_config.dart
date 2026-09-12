@@ -6,7 +6,7 @@ abstract final class AppConfig {
 
   static const mapStyleUrl = String.fromEnvironment(
     'RUNOVA_MAP_STYLE_URL',
-    defaultValue: 'https://demotiles.maplibre.org/style.json',
+    defaultValue: 'https://tiles.openfreemap.org/styles/liberty',
   );
 
   static const supabaseUrl = String.fromEnvironment('RUNOVA_SUPABASE_URL');
@@ -14,4 +14,3 @@ abstract final class AppConfig {
     'RUNOVA_SUPABASE_PUBLISHABLE_KEY',
   );
 }
-
